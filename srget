@@ -30,6 +30,19 @@ def checkCode(headerlst):
     else:
         return -1
 
+def chunkedRec(Body, sock):
+    n=200
+    s=""
+    data_got=""
+    while n>0:
+        data_got=sock.recv(2048)
+        Body=Body+data_got
+        dataLst=Body.split("\r\n")
+        for d in dataLst:
+            try: n=long(d)
+            except: s=s+d
+        Body=""
+    return s
 
 def myreceive(msgsize, sock):
     chunks = []
@@ -51,6 +64,8 @@ def extractFromHeader(headerlst, httpstatus):
             if "Content-Length" in w:
                 contentLen = w[16:]
                 return contentLen
+            elif "Transfer-Encoding: chunked" in w:
+                return w
     elif (httpStatus==3):
         for w in headerLst:
             if "Location:" in w:
@@ -93,8 +108,11 @@ if len(sys.argv) == 4 and sys.argv[1] == "-o":
                 httpStatus=checkCode(headerLst)
                 if (httpStatus==2):
                     contentLen=extractFromHeader(headerLst, httpStatus)
+                    if "Transfer-Encoding: chunked" in contentLen:
+                        Body=chunkedRec(Body, clientSock)
                     # print "content len: " + str(contentLen)
-                    Body=Body+myreceive(long(contentLen)-len(Body),clientSock)
+                    else:
+                        Body=Body+myreceive(long(contentLen)-len(Body),clientSock)
                     # print len(Body)
                     clientSock.close()
                     break
