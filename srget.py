@@ -18,6 +18,18 @@ def mysend(sock, msg):
             raise RuntimeError("socket connection broken")
         totalsent = totalsent + sent
 
+def checkCode(headerlst):
+    if (headerLst[0][9]=="2"):
+        return 2
+    elif (headerLst[0][9]=="3"):
+        return 3
+    elif (headerLst[0][9]=="4"):
+        return 4
+    elif (headerLst[0][9]=="5"):
+        return 5
+    else:
+        return -1
+
 
 def myreceive(msgsize, sock):
     chunks = []
@@ -33,19 +45,23 @@ def myreceive(msgsize, sock):
 def isHeader(string):
     return "\r\n\r\n" in string
 
-def getContentlen(header):
-    headerLst = header.split("\r\n")
-    if "OK" in headerLst[0]:
+def extractFromHeader(headerlst, httpstatus):
+    if (httpStatus==2):
         for w in headerLst:
             if "Content-Length" in w:
                 contentLen = w[16:]
                 return contentLen
-    else:
-        return -1
+    elif (httpStatus==3):
+        for w in headerLst:
+            if "Location:" in w:
+                location = w[10:]
+                return location
+    return "-1"
 
+httpStatus=0
 filename = ""
 url = ""
-id = ""
+location = ""
 prev_data = ""
 contentLen = ""
 
@@ -55,12 +71,12 @@ if len(sys.argv) == 4 and sys.argv[1] == "-o":
     URL = urlparse(u)
     path = URL.path
     host = URL.hostname
-    print "host: "+host
+    # print "host: "+host
     if (URL.port == None):
         port = 80
     else:
         port = URL.port
-    print "port: " + str(port)
+    # print "port: " + str(port)
     if URL.scheme == "http":
         clientSock = sock.socket(sock.AF_INET, sock.SOCK_STREAM)
         clientSock.connect((host, port))
@@ -73,26 +89,45 @@ if len(sys.argv) == 4 and sys.argv[1] == "-o":
             if isHeader(data_received)==True or isHeader(prev_data[len(prev_data)-3:]+data_received[0:3])==True:
                 header = header + data_received
                 allHead,Body=header.split("\r\n\r\n")
-                contentLen=getContentlen(allHead)
-                Body=Body+myreceive(long(contentLen)-len(Body),clientSock)
-                clientSock.close()
-                break
+                headerLst = allHead.split("\r\n")
+                httpStatus=checkCode(headerLst)
+                if (httpStatus==2):
+                    contentLen=extractFromHeader(headerLst, httpStatus)
+                    # print "content len: " + str(contentLen)
+                    Body=Body+myreceive(long(contentLen)-len(Body),clientSock)
+                    # print len(Body)
+                    clientSock.close()
+                    break
+                elif (httpStatus==3):
+                    location=extractFromHeader(headerLst, httpStatus)
+                    clientSock.close()
+                    break
+                else:
+                    clientSock.close()
+                    break
             else:
                 header = header + data_received
                 prev_data=data_received
             # if len(data_received) == 0:
             #     clientSock.close()
             #     break
-        # receive = myreceive(long(contentLen), clientSock)
-        # clientSock.close()
-        # f, content = firstBody.split('\r\n\r\n')
-        downloaded = open('/Users/T-Mac/Downloads/' + filename, 'wb')
-        # print "data received "+str(i),
-        # print d
-        downloaded.write(Body)
+        if httpStatus==4:
+            print "Client Error: incorrect syntax"
+            sys.exit()
+        elif httpStatus==5:
+            print "Server Error: server failed to fulfill an apparently valid request"
+            sys.exit()
+        elif httpStatus==-1:
+            print "Unknown Error: close socket connection"
+            sys.exit()
+        elif httpStatus==3:
+            print "Redirection"
+            sys.exit()
+        else:
+            downloaded = open(filename, 'wb')
+            downloaded.write(Body)
 
 
 else:
-    id = sys.argv[1]
-    command = sys.argv[2]
-    word = None
+    print "Can't proceed, killing self [invalid input parameters]"
+    sys.exit()
