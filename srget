@@ -1,14 +1,111 @@
 #!/usr/bin/env python
 
+
 import socket as sock
 import sys
 from urlparse import urlparse
+import cPickle as pickle
+import os
+
+def download(clientSock, filename):
+    prev_data=""
+    headDictionary={}
+    header=""
+    while True:
+        try:
+            data_received = clientSock.recv(1024)
+        except sock.timeout:
+            print "Socket connection timeout"
+            sys.exit()
+        if isHeader(data_received) == True or isHeader(prev_data[len(prev_data) - 3:] + data_received[0:3]) == True:
+            header = header + data_received
+            allHead, Body = header.split("\r\n\r\n")
+            downloaded = open(filename, 'wb')
+            downloaded.write(Body)
+            headerLst = allHead.split("\r\n")
+            for info in headerLst[1:]:
+                field, value = info.split(": ")
+                headDictionary[field] = value
+            headDictionary["byte_recv"] = len(Body)
+            pickle.dump(headDictionary, open(filename + ".HEAD", "w"))
+            httpStatus = checkCode(headerLst)
+            if (httpStatus == 2):
+                contentLen = extractFromHeader(headerLst, httpStatus)
+                if "Transfer-Encoding: chunked" in contentLen:
+                    Body = chunkedRec(Body, clientSock)
+                # print "content len: " + str(contentLen)
+                else:
+                    print "start recv body"
+                    myreceive(long(contentLen) - len(Body), clientSock, filename, headDictionary)
+                # print len(Body)
+                clientSock.close()
+                break
+            elif (httpStatus == 3):
+                location = extractFromHeader(headerLst, httpStatus)
+                clientSock.close()
+                break
+            else:
+                clientSock.close()
+                break
+        else:
+            header = header + data_received
+            prev_data = data_received
+
+
+def resumeGet(clientSock, filename):
+    prev_data=""
+    headDictionary={}
+    headerLst=[]
+    while True:
+        try:
+            data_received = clientSock.recv(1024)
+        except sock.timeout:
+            print "Socket connection timeout"
+            sys.exit()
+        header = ""
+        if isHeader(data_received) == True or isHeader(
+                        prev_data[len(prev_data) - 3:] + data_received[0:3]) == True:
+            header = header + data_received
+            allHead, Body = header.split("\r\n\r\n")
+            downloaded = open(filename, 'ab')
+            downloaded.write(Body)
+            headerLst = allHead.split("\r\n")
+            for info in headerLst[1:]:
+                field, value = info.split(": ")
+                headDictionary[field] = value
+            headDictionary["Content-Length"] = hDic["Content-Length"]
+            headDictionary["byte_recv"] = len(Body) + oldHeader["byte_recv"]
+            pickle.dump(headDictionary, open(filename + ".HEAD", "w"))
+            httpStatus = checkCode(headerLst)
+            # if (httpStatus == 2):
+            # contentLen = extractFromHeader(headerLst, httpStatus)
+            print "start recover!!!"
+            myreceive(long(oldHeader["Content-Length"]) - oldHeader["byte_recv"] - len(Body), clientSock, filename,
+                      headDictionary)
+            # print len(Body)
+            clientSock.close()
+            break
+        else:
+            header = header + data_received
+            prev_data = data_received
 
 
 def makeRequest(command, path, host, port):
     NewLine = "\r\n"
-    return (command + " {o} HTTP/1.1" + NewLine + "Host: {s}" + NewLine + NewLine).format(o=path, s=host + ":" + port)
+    return (command + " {o} HTTP/1.1" + NewLine + "Host: {s}" + NewLine+ "Connection: Close" + NewLine + NewLine).format(o=path, s=host + ":" + port)
 
+def make_http_request(req_type, path, details, ver="1.1"):
+    """ Compose an HTTP request """
+    NL = "\r\n"
+    req_line = "{verb} {w} HTTP/{v}".format(
+        verb=req_type, w=path, v=ver
+    )
+    details = [
+        "{name}: {v}".format(name=n, v=v) for (n, v) in details.iteritems()
+        ]
+    detail_lines = NL.join(details)
+    full_request = "".join([req_line, NL, detail_lines, NL, NL])
+    return full_request
 
 def mysend(sock, msg):
     totalsent = 0
@@ -18,7 +115,21 @@ def mysend(sock, msg):
             raise RuntimeError("socket connection broken")
         totalsent = totalsent + sent
 
-def checkCode(headerlst):
+
+def simpleRecv(header):
+    while True:
+        try:
+            data_received = clientSock.recv(1024)
+        except sock.timeout:
+            print "Socket connection timeout"
+            sys.exit()
+        header += data_received
+        if len(data_received) == 0:
+            clientSock.close()
+            break
+    return header
+
+def checkCode(headerLst):
     if (headerLst[0][9]=="2"):
         return 2
     elif (headerLst[0][9]=="3"):
@@ -31,6 +142,7 @@ def checkCode(headerlst):
         return -1
 
 def chunkedRec(Body, sock):
+    print "chunk in"
     n=200
     s=""
     data_got=""
@@ -44,21 +156,29 @@ def chunkedRec(Body, sock):
         Body=""
     return s
 
-def myreceive(msgsize, sock):
-    chunks = []
+def myreceive(msgsize, s, filename, d=None):
+    downloaded = open(filename, 'ab')
     bytes_recd = 0
+    s.settimeout(12)
     while bytes_recd < msgsize:
-        chunk = sock.recv(min(msgsize - bytes_recd, 2048))
+        try:
+            chunk = s.recv(min(msgsize - bytes_recd, 2048))
+        except sock.timeout:
+            print "Socket connection timeout"
+            sys.exit()
+        # chunk = sock.recv(min(msgsize - bytes_recd, 2048))
         if chunk == '':
             raise RuntimeError("socket connection broken")
-        chunks.append(chunk)
+        downloaded.write(chunk)
         bytes_recd = bytes_recd + len(chunk)
-    return ''.join(chunks)
+        if d!=None:
+            d["byte_recv"] = d["byte_recv"] + len(chunk)
+            pickle.dump(d, open(filename + ".HEAD", "w"))
 
 def isHeader(string):
     return "\r\n\r\n" in string
 
-def extractFromHeader(headerlst, httpstatus):
+def extractFromHeader(headerLst, httpStatus):
     if (httpStatus==2):
         for w in headerLst:
             if "Content-Length" in w:
@@ -79,6 +199,9 @@ url = ""
 location = ""
 prev_data = ""
 contentLen = ""
+headDictionary={}
+header = ""
+hDic={}
 
 if len(sys.argv) == 4 and sys.argv[1] == "-o":
     filename = sys.argv[2]
@@ -95,40 +218,108 @@ if len(sys.argv) == 4 and sys.argv[1] == "-o":
     if URL.scheme == "http":
         clientSock = sock.socket(sock.AF_INET, sock.SOCK_STREAM)
         clientSock.connect((host, port))
-        header = ""
+        if os.path.isfile(filename + ".HEAD"):
+            oldHeader = pickle.load(open(filename + ".HEAD", "r"))
+            getRequest = makeRequest("HEAD", path, host, str(port))
+            mysend(clientSock, getRequest)
+            clientSock.settimeout(12)
+            header=simpleRecv(header)
+            headlst=header.split("\r\n")
+            # print headlst
+            for i in range (1, len(headlst)-2):
+                # print headlst[i]
+                f, v = headlst[i].split(": ")
+                hDic[f] = v
+
+            if ("Content-Length" in hDic and "Content-Length" in oldHeader):
+                if (hDic["Content-Length"]==oldHeader["Content-Length"] and "ETag" in hDic and "ETag" in oldHeader):
+                    if (hDic["ETag"]==oldHeader["ETag"]):
+                        req_detail={}
+                        req_detail["Host"]=host
+                        req_detail["Connection"]="Close"
+                        req_detail["Range"]="bytes="+str(oldHeader["byte_recv"])+"-"
+                        print "resume"
+                        clientSock = sock.socket(sock.AF_INET, sock.SOCK_STREAM)
+                        clientSock.connect((host, port))
+                        httpReq=make_http_request("GET", path, req_detail)
+                        # print "==============="
+                        # print httpReq
+                        # print "==============="
+                        mysend(clientSock, httpReq)
+                        clientSock.settimeout(12)
+                        resumeGet(clientSock, filename)
+                        # resumeGet(clientSock, oldHeader, filename)
+                        os.remove(filename + ".HEAD")
+                        sys.exit()
+                    else:
+                        print "Error: we can not resume download"
+                        os.remove(filename + ".HEAD")
+                        clientSock = sock.socket(sock.AF_INET, sock.SOCK_STREAM)
+                        clientSock.connect((host, port))
+                        getRequest = makeRequest("GET", path, host, str(port))
+                        mysend(clientSock, getRequest)
+                        # print long(contentLen)
+                        clientSock.settimeout(12)
+                        download(clientSock, filename)
+                        sys.exit()
+
+                elif (hDic["Content-Length"]==oldHeader["Content-Length"]  and "Last-Modified" in hDic and "Last-Modified" in headDictionary):
+                    if (hDic["Last-Modified"]==oldHeader["Last-Modified"]):
+                        print "resume"
+                        req_detail = {}
+                        req_detail["Host"]=host
+                        req_detail["Connection"] = "Close"
+                        req_detail["Range"] = str(oldHeader["byte_recv"]) + "-"
+                        clientSock = sock.socket(sock.AF_INET, sock.SOCK_STREAM)
+                        clientSock.connect((host, port))
+                        httpReq = make_http_request("GET", path, req_detail)
+                        mysend(clientSock, httpReq)
+                        clientSock.settimeout(12)
+                        resumeGet(clientSock, filename)
+                        # resumeGet(clientSock, oldHeader, filename)
+                        os.remove(filename + ".HEAD")
+                        sys.exit()
+                    else:
+                        print "Error: we can not resume download"
+                        os.remove(filename + ".HEAD")
+                        clientSock = sock.socket(sock.AF_INET, sock.SOCK_STREAM)
+                        clientSock.connect((host, port))
+                        getRequest = makeRequest("GET", path, host, str(port))
+                        mysend(clientSock, getRequest)
+                        # print long(contentLen)
+                        clientSock.settimeout(12)
+                        download(clientSock, filename)
+                        sys.exit()
+
+
+                else:
+                    print "Error: we can not resume download"
+                    os.remove(filename + ".HEAD")
+                    clientSock = sock.socket(sock.AF_INET, sock.SOCK_STREAM)
+                    clientSock.connect((host, port))
+                    getRequest = makeRequest("GET", path, host, str(port))
+                    mysend(clientSock, getRequest)
+                    # print long(contentLen)
+                    clientSock.settimeout(12)
+                    download(clientSock, filename)
+                    sys.exit()
+            else:
+                print "Error: we can not resume download"
+                os.remove(filename + ".HEAD")
+                clientSock = sock.socket(sock.AF_INET, sock.SOCK_STREAM)
+                clientSock.connect((host, port))
+                getRequest = makeRequest("GET", path, host, str(port))
+                mysend(clientSock, getRequest)
+                # print long(contentLen)
+                clientSock.settimeout(12)
+                download(clientSock, filename)
+                sys.exit()
+
         getRequest = makeRequest("GET", path, host, str(port))
         mysend(clientSock, getRequest)
         # print long(contentLen)
-        while True:
-            data_received = clientSock.recv(1024)
-            if isHeader(data_received)==True or isHeader(prev_data[len(prev_data)-3:]+data_received[0:3])==True:
-                header = header + data_received
-                allHead,Body=header.split("\r\n\r\n")
-                headerLst = allHead.split("\r\n")
-                httpStatus=checkCode(headerLst)
-                if (httpStatus==2):
-                    contentLen=extractFromHeader(headerLst, httpStatus)
-                    if "Transfer-Encoding: chunked" in contentLen:
-                        Body=chunkedRec(Body, clientSock)
-                    # print "content len: " + str(contentLen)
-                    else:
-                        Body=Body+myreceive(long(contentLen)-len(Body),clientSock)
-                    # print len(Body)
-                    clientSock.close()
-                    break
-                elif (httpStatus==3):
-                    location=extractFromHeader(headerLst, httpStatus)
-                    clientSock.close()
-                    break
-                else:
-                    clientSock.close()
-                    break
-            else:
-                header = header + data_received
-                prev_data=data_received
-            # if len(data_received) == 0:
-            #     clientSock.close()
-            #     break
+        clientSock.settimeout(12)
+        download(clientSock, filename)
         if httpStatus==4:
             print "Client Error: incorrect syntax"
             sys.exit()
@@ -142,9 +333,8 @@ if len(sys.argv) == 4 and sys.argv[1] == "-o":
             print "Redirection"
             sys.exit()
         else:
-            downloaded = open(filename, 'wb')
-            downloaded.write(Body)
-
+            os.remove(filename+".HEAD")
+            print "complete"
 
 else:
     print "Can't proceed, killing self [invalid input parameters]"
